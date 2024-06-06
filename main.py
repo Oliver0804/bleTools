@@ -2,6 +2,8 @@ import asyncio
 from bleak import BleakScanner, BleakClient, BleakError
 from colorama import init, Fore
 from datetime import datetime
+import sys
+import select
 
 # 初始化 colorama
 init(autoreset=True)
@@ -19,8 +21,11 @@ LED_SERVICE_UUID = "0000ffc0-0000-1000-8000-00805f9b34fb"  # LED服務 UUID
 LED_MODE_CHAR_UUID = "0000ffc1-0000-1000-8000-00805f9b34fb"  # LED模式特徵 UUID
 LED_SETTING_CHAR_UUID = "0000ffc2-0000-1000-8000-00805f9b34fb"  # LED設定特徵 UUID
 BUTTON_CHAR_UUID = "0000ffc3-0000-1000-8000-00805f9b34fb"  # 按鈕特徵 UUID
+MOTION_SERVICE_UUID = "00001600-0000-1000-8000-00805f9b34fb"  # Motion 服務 UUID
+MOTION_MEASUREMENT_CHAR_UUID = "00001601-0000-1000-8000-00805f9b34fb"  # Motion measurement 特徵 UUID
 
 button_pushed = False
+imu_data_received = False
 
 async def scan_devices():
     print(Fore.CYAN + "Scanning for devices...")
@@ -51,6 +56,7 @@ def select_device(devices):
             print(Fore.RED + "Invalid input. Please enter a number.")
 
 async def read_battery_level(client):
+    print(Fore.CYAN + "Reading battery level...")
     try:
         battery_level = await client.read_gatt_char(BATTERY_LEVEL_UUID)
         print(Fore.GREEN + f"Battery Level: {int(battery_level[0])}%")
@@ -58,6 +64,7 @@ async def read_battery_level(client):
         print(Fore.RED + f"Failed to read battery level: {e}")
 
 async def read_device_information(client):
+    print(Fore.CYAN + "Reading device information...")
     try:
         manufacturer_name = await client.read_gatt_char(MANUFACTURER_NAME_UUID)
         print(Fore.GREEN + f"Manufacturer Name: {manufacturer_name.decode('utf-8')}")
@@ -83,6 +90,7 @@ async def read_device_information(client):
         print(Fore.RED + f"Failed to read hardware version: {e}")
 
 async def read_tx_power(client):
+    print(Fore.CYAN + "Reading TX power...")
     try:
         tx_power = await client.read_gatt_char(TX_POWER_UUID)
         print(Fore.GREEN + f"TX Power: {int(tx_power[0])} dBm")
@@ -90,6 +98,7 @@ async def read_tx_power(client):
         print(Fore.RED + f"Failed to read TX power: {e}")
 
 async def read_current_time(client):
+    print(Fore.CYAN + "Reading current time...")
     try:
         current_time = await client.read_gatt_char(CURRENT_TIME_UUID)
         current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -98,6 +107,7 @@ async def read_current_time(client):
         print(Fore.RED + f"Failed to read current time: {e}")
 
 async def set_led_mode(client, mode):
+    print(Fore.CYAN + f"Setting LED mode to {'ON' if mode == 0x01 else 'OFF'}...")
     try:
         await client.write_gatt_char(LED_MODE_CHAR_UUID, bytearray([mode]))
         print(Fore.GREEN + f"Set LED mode to {'ON' if mode == 0x01 else 'OFF'}")
@@ -105,6 +115,7 @@ async def set_led_mode(client, mode):
         print(Fore.RED + f"Failed to set LED mode: {e}")
 
 async def set_led_setting(client, red, green, blue, blink_mode, blink_period):
+    print(Fore.CYAN + f"Setting LED color to RGB({red}, {green}, {blue}), mode: {blink_mode}, period: {blink_period}...")
     try:
         command = bytearray([red, green, blue, blink_mode, blink_period])
         await client.write_gatt_char(LED_SETTING_CHAR_UUID, command)
@@ -126,6 +137,7 @@ def button_callback(sender: int, data: bytearray):
 
 async def monitor_button(client):
     global button_pushed
+    print(Fore.CYAN + "Press BUTTON1 or BUTTON2 within the next 5 seconds...")
     try:
         await client.start_notify(BUTTON_CHAR_UUID, button_callback)
         await asyncio.sleep(5)
@@ -135,6 +147,34 @@ async def monitor_button(client):
     except Exception as e:
         print(Fore.RED + f"Failed to monitor button: {e}")
 
+def parse_imu_data(data):
+    ax = int.from_bytes(data[0:2], byteorder='little', signed=True)
+    ay = int.from_bytes(data[2:4], byteorder='little', signed=True)
+    az = int.from_bytes(data[4:6], byteorder='little', signed=True)
+    gx = int.from_bytes(data[6:8], byteorder='little', signed=True)
+    gy = int.from_bytes(data[8:10], byteorder='little', signed=True)
+    gz = int.from_bytes(data[10:12], byteorder='little', signed=True)
+    return ax, ay, az, gx, gy, gz
+
+def imu_callback(sender: int, data: bytearray):
+    global imu_data_received
+    imu_data_received = True
+    ax, ay, az, gx, gy, gz = parse_imu_data(data)
+    print(Fore.CYAN + f"IMU data: AX={ax}, AY={ay}, AZ={az}, GX={gx}, GY={gy}, GZ={gz}")
+
+async def monitor_imu(client):
+    global imu_data_received
+    imu_data_received = False
+    print(Fore.CYAN + "Monitoring IMU data...")
+    try:
+        await client.start_notify(MOTION_MEASUREMENT_CHAR_UUID, imu_callback)
+        await asyncio.sleep(5)
+        await client.stop_notify(MOTION_MEASUREMENT_CHAR_UUID)
+        if not imu_data_received:
+            print(Fore.RED + "No IMU data received within 5 seconds.")
+    except Exception as e:
+        print(Fore.RED + f"Failed to monitor IMU data: {e}")
+
 async def run():
     devices = await scan_devices()
     if not devices:
@@ -143,30 +183,67 @@ async def run():
     target_device = select_device(devices)
     print(Fore.CYAN + f"Connecting to device {target_device.name} ({target_device.address})")
 
-    async with BleakClient(target_device) as client:
-        print(Fore.GREEN + f"Connected: {client.is_connected}")
+    try:
+        async with BleakClient(target_device.address) as client:
+            print(Fore.GREEN + f"Connected: {client.is_connected}")
 
-        await read_battery_level(client)
-        await read_device_information(client)
-        await read_tx_power(client)
-        await read_current_time(client)
-        
-        # 啟用 LED
-        await set_led_mode(client, 0x01)
-        
-        # 設置 LED 顏色和模式
-        await set_led_setting(client, 0xFF, 0x00, 0x00, 0x02, 0x00)  # 紅色
-        await asyncio.sleep(1)
-        await set_led_setting(client, 0x00, 0xFF, 0x00, 0x02, 0x00)  # 綠色
-        await asyncio.sleep(1)
-        await set_led_setting(client, 0x00, 0x00, 0xFF, 0x02, 0x00)  # 藍色
-        await asyncio.sleep(1)
-        
-        # 停用 LED
-        await set_led_mode(client, 0x00)
-        
-        # 監視按鈕狀態
-        await monitor_button(client)
+            try:
+                await read_battery_level(client)
+            except Exception as e:
+                print(Fore.RED + f"Error in read_battery_level: {e}")
+
+            try:
+                await read_device_information(client)
+            except Exception as e:
+                print(Fore.RED + f"Error in read_device_information: {e}")
+
+            try:
+                await read_tx_power(client)
+            except Exception as e:
+                print(Fore.RED + f"Error in read_tx_power: {e}")
+
+            try:
+                await read_current_time(client)
+            except Exception as e:
+                print(Fore.RED + f"Error in read_current_time: {e}")
+
+            try:
+                # 啟用 LED
+                await set_led_mode(client, 0x01)
+            except Exception as e:
+                print(Fore.RED + f"Error in set_led_mode(ON): {e}")
+
+            try:
+                # 設置 LED 顏色和模式
+                await set_led_setting(client, 0xFF, 0x00, 0x00, 0x02, 0x00)  # 紅色
+                await asyncio.sleep(1)
+                await set_led_setting(client, 0x00, 0xFF, 0x00, 0x02, 0x00)  # 綠色
+                await asyncio.sleep(1)
+                await set_led_setting(client, 0x00, 0x00, 0xFF, 0x02, 0x00)  # 藍色
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(Fore.RED + f"Error in set_led_setting: {e}")
+
+            try:
+                # 停用 LED
+                await set_led_mode(client, 0x00)
+            except Exception as e:
+                print(Fore.RED + f"Error in set_led_mode(OFF): {e}")
+
+            try:
+                # 監視按鈕狀態
+                await monitor_button(client)
+            except Exception as e:
+                print(Fore.RED + f"Error in monitor_button: {e}")
+
+            try:
+                # 監視 IMU 數據
+                await monitor_imu(client)
+            except Exception as e:
+                print(Fore.RED + f"Error in monitor_imu: {e}")
+
+    except Exception as e:
+        print(Fore.RED + f"Failed to connect to the device: {e}")
 
 if __name__ == "__main__":
     asyncio.run(run())
