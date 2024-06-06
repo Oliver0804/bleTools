@@ -2,8 +2,7 @@ import asyncio
 from bleak import BleakScanner, BleakClient, BleakError
 from colorama import init, Fore
 from datetime import datetime
-import sys
-import select
+import os
 
 # 初始化 colorama
 init(autoreset=True)
@@ -24,6 +23,7 @@ BUTTON_CHAR_UUID = "0000ffc3-0000-1000-8000-00805f9b34fb"  # 按鈕特徵 UUID
 MOTION_SERVICE_UUID = "00001600-0000-1000-8000-00805f9b34fb"  # Motion 服務 UUID
 MOTION_MEASUREMENT_CHAR_UUID = "00001601-0000-1000-8000-00805f9b34fb"  # Motion measurement 特徵 UUID
 
+MAC_FILE_PATH = "MacID.txt"
 button_pushed = False
 imu_data_received = False
 
@@ -175,6 +175,20 @@ async def monitor_imu(client):
     except Exception as e:
         print(Fore.RED + f"Failed to monitor IMU data: {e}")
 
+def log_mac_address(address):
+    if os.path.exists(MAC_FILE_PATH):
+        with open(MAC_FILE_PATH, 'r') as f:
+            mac_addresses = f.read().splitlines()
+        if address in mac_addresses:
+            print(Fore.YELLOW + f"Device {address} has already been tested.")
+            return
+    else:
+        mac_addresses = []
+
+    with open(MAC_FILE_PATH, 'a') as f:
+        f.write(address + '\n')
+    print(Fore.GREEN + f"MAC address {address} logged.")
+
 async def run():
     devices = await scan_devices()
     if not devices:
@@ -241,6 +255,9 @@ async def run():
                 await monitor_imu(client)
             except Exception as e:
                 print(Fore.RED + f"Error in monitor_imu: {e}")
+
+            # 記錄MAC地址
+            log_mac_address(target_device.address)
 
     except Exception as e:
         print(Fore.RED + f"Failed to connect to the device: {e}")
