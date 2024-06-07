@@ -7,6 +7,7 @@ from datetime import datetime
 import os
 import tkinter as tk
 from tkinter import ttk
+from tkinter.font import Font
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
@@ -30,14 +31,15 @@ MOTION_SERVICE_UUID = "00001600-0000-1000-8000-00805f9b34fb"  # Motion 服務 UU
 MOTION_MEASUREMENT_CHAR_UUID = "00001601-0000-1000-8000-00805f9b34fb"  # Motion measurement 特徵 UUID
 CTS_SERVICE_UUID = "00001805-0000-1000-8000-00805f9b34fb"  # Current Time Service UUID
 CTS_CHARACTERISTIC_UUID = "00002a2b-0000-1000-8000-00805f9b34fb"  # Current Time Characteristic UUID
+IMU_SETTING_CHAR_UUID = "0000ff10-0000-1000-8000-00805f9b34fb"  # IMU 設定特徵 UUID
 
 MAC_FILE_PATH = "MacID.txt"
 button_pushed_count = 0
 imu_data_received = False
 recording = False
-imu_log_file = None
 stop_monitoring = False
 connected_device = None
+disconnect_event = threading.Event()
 
 # 初始化 IMU 數據存儲
 imu_data = {
@@ -54,7 +56,7 @@ imu_data = {
 imu_queue = queue.Queue()
 
 async def scan_devices():
-    print_to_terminal("Scanning for devices...", Fore.CYAN)
+    print_to_terminal("Scanning for devices...", Fore.BLACK)
     devices = await BleakScanner.discover()
     if not devices:
         print_to_terminal("No devices found.", Fore.RED)
@@ -70,59 +72,42 @@ async def scan_devices():
         print_to_terminal(f"{i}: {device.name} ({device.address})", Fore.YELLOW)
     return target_devices
 
-def print_to_terminal(message, color=Fore.WHITE):
+def print_to_terminal(message, color=Fore.BLACK):
     terminal_text.config(state=tk.NORMAL)
     terminal_text.insert(tk.END, message + "\n", color)
     terminal_text.config(state=tk.DISABLED)
     terminal_text.see(tk.END)
 
-def select_device(devices):
-    while True:
-        try:
-            choice = int(input(f"Enter the number of the device you want to connect to (0-{len(devices)-1}): "))
-            if 0 <= choice < len(devices):
-                return devices[choice]
-            else:
-                print(f"Please enter a number between 0 and {len(devices)-1}.")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
-
 async def read_battery_level(client):
-    print_to_terminal("Reading battery level...", Fore.CYAN)
+    print_to_terminal("Reading battery level...", Fore.BLACK)
     try:
         battery_level = await client.read_gatt_char(BATTERY_LEVEL_UUID)
-        print_to_terminal(f"Battery Level: {int(battery_level[0])}%", Fore.GREEN)
+        battery_percentage = int(battery_level[0])
+        print_to_terminal(f"Battery Level: {battery_percentage}%", Fore.GREEN)
+        app.update_checkbutton(app.battery_checkbutton, True, f"Battery Level: {battery_percentage}%")
     except Exception as e:
         print_to_terminal(f"Failed to read battery level: {e}", Fore.RED)
 
 async def read_device_information(client):
-    print_to_terminal("Reading device information...", Fore.CYAN)
+    print_to_terminal("Reading device information...", Fore.BLACK)
     try:
         manufacturer_name = await client.read_gatt_char(MANUFACTURER_NAME_UUID)
-        print_to_terminal(f"Manufacturer Name: {manufacturer_name.decode('utf-8')}", Fore.GREEN)
-    except Exception as e:
-        print_to_terminal(f"Failed to read manufacturer name: {e}", Fore.RED)
-
-    try:
         model_number = await client.read_gatt_char(MODEL_NUMBER_UUID)
-        print_to_terminal(f"Model Number: {model_number.decode('utf-8')}", Fore.GREEN)
-    except Exception as e:
-        print_to_terminal(f"Failed to read model number: {e}", Fore.RED)
-
-    try:
         firmware_version = await client.read_gatt_char(FIRMWARE_VERSION_UUID)
-        print_to_terminal(f"Firmware Version: {firmware_version.decode('utf-8')}", Fore.GREEN)
-    except Exception as e:
-        print_to_terminal(f"Failed to read firmware version: {e}", Fore.RED)
-
-    try:
         hardware_version = await client.read_gatt_char(HARDWARE_VERSION_UUID)
-        print_to_terminal(f"Hardware Version: {hardware_version.decode('utf-8')}", Fore.GREEN)
+        
+        info_text = (f"Manufacturer Name: {manufacturer_name.decode('utf-8')}\n"
+                     f"Model Number: {model_number.decode('utf-8')}\n"
+                     f"Firmware Version: {firmware_version.decode('utf-8')}\n"
+                     f"Hardware Version: {hardware_version.decode('utf-8')}")
+        
+        print_to_terminal(info_text, Fore.GREEN)
+        app.update_checkbutton(app.device_info_checkbutton, True, f"Firmware: {firmware_version.decode('utf-8')}\nHardware: {hardware_version.decode('utf-8')}")
     except Exception as e:
-        print_to_terminal(f"Failed to read hardware version: {e}", Fore.RED)
+        print_to_terminal(f"Failed to read device information: {e}", Fore.RED)
 
 async def read_tx_power(client):
-    print_to_terminal("Reading TX power...", Fore.CYAN)
+    print_to_terminal("Reading TX power...", Fore.BLACK)
     try:
         tx_power = await client.read_gatt_char(TX_POWER_UUID)
         print_to_terminal(f"TX Power: {int(tx_power[0])} dBm", Fore.GREEN)
@@ -140,7 +125,8 @@ async def write_current_time(client):
         now.minute,
         now.second
     ])
-    print_to_terminal(f"Writing current time: {data.hex()}", Fore.CYAN)
+    hex_value = data.hex()
+    print_to_terminal(f"Writing current time: {hex_value}", Fore.BLACK)
     try:
         await client.write_gatt_char(CTS_CHARACTERISTIC_UUID, data)
         print_to_terminal("Current time written successfully.", Fore.GREEN)
@@ -148,21 +134,49 @@ async def write_current_time(client):
         print_to_terminal(f"Failed to write current time: {e}", Fore.RED)
 
 async def read_current_time(client):
-    print_to_terminal("Reading current time...", Fore.CYAN)
+    print_to_terminal("Reading current time...", Fore.BLACK)
     try:
         current_time = await client.read_gatt_char(CTS_CHARACTERISTIC_UUID)
+        hex_value = current_time.hex()
+        print_to_terminal(f"Read current time (HEX): {hex_value}", Fore.BLACK)
+        
+        if len(current_time) < 10:
+            raise ValueError("Invalid Current Time characteristic length")
+        
         year = int.from_bytes(current_time[0:2], byteorder='little')
         month = current_time[2]
         day = current_time[3]
         hour = current_time[4]
         minute = current_time[5]
         second = current_time[6]
-        print_to_terminal(f"Current Time: {year}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}", Fore.GREEN)
+        day_of_week = current_time[7]
+        fractions256 = current_time[8]
+        adjust_reason = current_time[9]
+
+        if not (1 <= month <= 12):
+            month = "Invalid"
+        if not (1 <= day <= 31):
+            day = "Invalid"
+        if not (0 <= hour <= 23):
+            hour = "Invalid"
+        if not (0 <= minute <= 59):
+            minute = "Invalid"
+        if not (0 <= second <= 59):
+            second = "Invalid"
+
+        days_of_week = ["Unknown", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_of_week_str = days_of_week[day_of_week] if 0 <= day_of_week < len(days_of_week) else "Unknown"
+
+        print_to_terminal(
+            f"Current Time: {year}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} "
+            f"Day of Week: {day_of_week_str}, "
+            f"Fractions256: {fractions256}, Adjust Reason: {adjust_reason}", Fore.GREEN
+        )
     except Exception as e:
         print_to_terminal(f"Failed to read current time: {e}", Fore.RED)
 
 async def set_led_mode(client, mode):
-    print_to_terminal(f"Setting LED mode to {'ON' if mode == 0x01 else 'OFF'}...", Fore.CYAN)
+    print_to_terminal(f"Setting LED mode to {'ON' if mode == 0x01 else 'OFF'}...", Fore.BLACK)
     try:
         await client.write_gatt_char(LED_MODE_CHAR_UUID, bytearray([mode]))
         print_to_terminal(f"Set LED mode to {'ON' if mode == 0x01 else 'OFF'}", Fore.GREEN)
@@ -170,7 +184,7 @@ async def set_led_mode(client, mode):
         print_to_terminal(f"Failed to set LED mode: {e}", Fore.RED)
 
 async def set_led_setting(client, red, green, blue, blink_mode, blink_period):
-    print_to_terminal(f"Setting LED color to RGB({red}, {green}, {blue}), mode: {blink_mode}, period: {blink_period}...", Fore.CYAN)
+    print_to_terminal(f"Setting LED color to RGB({red}, {green}, {blue}), mode: {blink_mode}, period: {blink_period}...", Fore.BLACK)
     try:
         command = bytearray([red, green, blue, blink_mode, blink_period])
         await client.write_gatt_char(LED_SETTING_CHAR_UUID, command)
@@ -178,20 +192,32 @@ async def set_led_setting(client, red, green, blue, blink_mode, blink_period):
     except Exception as e:
         print_to_terminal(f"Failed to set LED setting: {e}", Fore.RED)
 
+async def set_monitor_imu(client, value):
+    print_to_terminal(f"Setting IMU to {'ENABLE' if value == 0xFE else 'DISABLE'}...", Fore.BLACK)
+    try:
+        await client.write_gatt_char(IMU_SETTING_CHAR_UUID, bytearray([value]))
+        print_to_terminal(f"IMU {'enabled' if value == 0xFE else 'disabled'}", Fore.GREEN)
+    except Exception as e:
+        print_to_terminal(f"Failed to set IMU: {e}", Fore.RED)
+
 def button_callback(sender: int, data: bytearray):
     global button_pushed_count
     if data[0] in [0x01, 0x10, 0x11]:
         button_pushed_count += 1
         print_to_terminal(f"Button pressed {button_pushed_count} times", Fore.GREEN)
+        if button_pushed_count >= 2:
+            app.update_checkbutton(app.button_checkbutton, True, "Button: Pass")
 
 async def monitor_button(client):
     global button_pushed_count
     button_pushed_count = 0
-    print_to_terminal("Press any button twice to continue...", Fore.CYAN)
+    print_to_terminal("Press any button twice to continue...", Fore.BLACK)
     try:
         await client.start_notify(BUTTON_CHAR_UUID, button_callback)
         while button_pushed_count < 2:
             await asyncio.sleep(0.1)
+            if disconnect_event.is_set():
+                break
         await client.stop_notify(BUTTON_CHAR_UUID)
     except Exception as e:
         print_to_terminal(f"Failed to monitor button: {e}", Fore.RED)
@@ -206,7 +232,7 @@ def parse_imu_data(data):
     return ax, ay, az, gx, gy, gz
 
 def imu_callback(sender: int, data: bytearray):
-    global imu_data_received, imu_log_file, recording
+    global imu_data_received, recording
     imu_data_received = True
     ax, ay, az, gx, gy, gz = parse_imu_data(data)
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
@@ -217,31 +243,27 @@ def imu_callback(sender: int, data: bytearray):
     imu_data["gx"].append(gx)
     imu_data["gy"].append(gy)
     imu_data["gz"].append(gz)
-    if recording and imu_log_file:
-        imu_log_file.write(f"{timestamp},{ax},{ay},{az},{gx},{gy},{gz}\n")
-    print_to_terminal(f"IMU data: {timestamp} AX={ax}, AY={ay}, AZ={az}, GX={gx}, GY={gy}, GZ={gz}", Fore.CYAN)
+    print_to_terminal(f"IMU data: {timestamp} AX={ax}, AY={ay}, AZ={az}, GX={gx}, GY={gy}, GZ={gz}", Fore.BLACK)
     imu_queue.put((timestamp, ax, ay, az, gx, gy, gz))  # 將數據放入隊列中
+    if imu_data_received:
+        app.update_checkbutton(app.imu_checkbutton, True, "IMU: Pass")
 
 async def monitor_imu(client):
-    global imu_data_received, imu_log_file, recording, stop_monitoring
+    global imu_data_received, recording, stop_monitoring
     imu_data_received = False
     recording = True
     stop_monitoring = False
-    imu_log_file = open(f"IMU_Log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt", "w")
-    print_to_terminal("Monitoring IMU data... Press 'Stop' to end.", Fore.CYAN)
+    print_to_terminal("Monitoring IMU data... Press 'Stop' to end.", Fore.BLACK)
     try:
         await client.start_notify(MOTION_MEASUREMENT_CHAR_UUID, imu_callback)
         while not stop_monitoring:
             await asyncio.sleep(0.1)
-            if not client.is_connected:
-                await client.connect()
+            if disconnect_event.is_set():
+                break
         await client.stop_notify(MOTION_MEASUREMENT_CHAR_UUID)
     except Exception as e:
         print_to_terminal(f"Failed to monitor IMU data: {e}", Fore.RED)
-    finally:
-        if imu_log_file:
-            imu_log_file.close()
-        recording = False
+    recording = False
 
 def log_mac_address(address):
     if os.path.exists(MAC_FILE_PATH):
@@ -306,24 +328,71 @@ class BLEMonitorApp:
 
         self.update_plot()
 
-        # Terminal text box
+        # Terminal text box with label
+        terminal_frame = tk.Frame(control_frame)
+        terminal_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        terminal_label = tk.Label(terminal_frame, text="程序輸出：")
+        terminal_label.pack(side=tk.TOP, anchor='w')
+        
         global terminal_text
-        terminal_text = tk.Text(control_frame, wrap=tk.WORD, height=10)
+        terminal_text = tk.Text(terminal_frame, wrap=tk.WORD, height=10)
         terminal_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         terminal_text.config(state=tk.DISABLED)
-        terminal_text.tag_config(Fore.CYAN, foreground="cyan")
+        terminal_text.tag_config(Fore.CYAN, foreground="black")
         terminal_text.tag_config(Fore.RED, foreground="red")
         terminal_text.tag_config(Fore.GREEN, foreground="green")
         terminal_text.tag_config(Fore.YELLOW, foreground="yellow")
 
-        # Scan result ListBox
-        self.scan_listbox = tk.Listbox(control_frame)
+        # Scan result ListBox with label
+        scan_list_frame = tk.Frame(control_frame)
+        scan_list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        scan_list_label = tk.Label(scan_list_frame, text="藍牙裝置列表")
+        scan_list_label.pack(side=tk.TOP, anchor='w')
+        
+        self.scan_listbox = tk.Listbox(scan_list_frame)
         self.scan_listbox.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.scan_listbox.bind('<<ListboxSelect>>', self.on_scan_select)
 
-        # MAC address ListBox
-        self.mac_listbox = tk.Listbox(control_frame)
-        self.mac_listbox.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # MAC address ListBox with label and info panel
+        mac_list_frame = tk.Frame(control_frame)
+        mac_list_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        mac_list_label = tk.Label(mac_list_frame, text="已記錄MAC")
+        mac_list_label.pack(side=tk.TOP, anchor='w')
+
+        mac_list_inner_frame = tk.Frame(mac_list_frame)
+        mac_list_inner_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        
+        self.mac_listbox = tk.Listbox(mac_list_inner_frame)
+        self.mac_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        info_frame = tk.Frame(mac_list_inner_frame)
+        info_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        font = Font(size=12)
+
+        self.device_info_checkbutton_var = tk.BooleanVar()
+        self.device_info_checkbutton = tk.Checkbutton(info_frame, text="裝置資訊", variable=self.device_info_checkbutton_var, state=tk.DISABLED, font=font)
+        self.device_info_checkbutton.pack(anchor='w')
+        self.device_info_label = tk.Label(info_frame, text="", font=font)
+        self.device_info_label.pack(anchor='w')
+
+        self.battery_checkbutton_var = tk.BooleanVar()
+        self.battery_checkbutton = tk.Checkbutton(info_frame, text="電池電量", variable=self.battery_checkbutton_var, state=tk.DISABLED, font=font)
+        self.battery_checkbutton.pack(anchor='w')
+        self.battery_label = tk.Label(info_frame, text="", font=font)
+        self.battery_label.pack(anchor='w')
+
+        self.button_checkbutton_var = tk.BooleanVar()
+        self.button_checkbutton = tk.Checkbutton(info_frame, text="按扭", variable=self.button_checkbutton_var, state=tk.DISABLED, font=font)
+        self.button_checkbutton.pack(anchor='w')
+        self.button_label = tk.Label(info_frame, text="", font=font)
+        self.button_label.pack(anchor='w')
+
+        self.imu_checkbutton_var = tk.BooleanVar()
+        self.imu_checkbutton = tk.Checkbutton(info_frame, text="IMU", variable=self.imu_checkbutton_var, state=tk.DISABLED, font=font)
+        self.imu_checkbutton.pack(anchor='w')
+        self.imu_label = tk.Label(info_frame, text="", font=font)
+        self.imu_label.pack(anchor='w')
 
         button_frame = tk.Frame(control_frame)
         button_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -386,6 +455,7 @@ class BLEMonitorApp:
             return
 
         self.scan_listbox.delete(0, tk.END)
+        self.reset_checkbuttons()
         self.ble_thread = threading.Thread(target=run_event_loop, args=(self.update_scan_list,))
         self.ble_thread.start()
 
@@ -418,7 +488,8 @@ class BLEMonitorApp:
 
     def connect_to_device(self, address):
         async def connect():
-            global connected_device
+            global connected_device, disconnect_event
+            disconnect_event.clear()
             try:
                 connected_device = BleakClient(address)
                 async with connected_device:
@@ -427,7 +498,8 @@ class BLEMonitorApp:
                     await read_device_information(connected_device)
                     await read_tx_power(connected_device)
                     await write_current_time(connected_device)
-                    await read_current_time(connected_device)
+                    #TODO: await read_current_time(connected_device) #功能異常待修復
+                    #await read_current_time(connected_device) 
                     await set_led_mode(connected_device, 0x01)
                     await set_led_setting(connected_device, 0xFF, 0x00, 0x00, 0x02, 0x00)  # 紅色
                     await asyncio.sleep(1)
@@ -436,8 +508,10 @@ class BLEMonitorApp:
                     await set_led_setting(connected_device, 0x00, 0x00, 0xFF, 0x02, 0x00)  # 藍色
                     await asyncio.sleep(1)
                     await set_led_mode(connected_device, 0x00)
+                    await set_monitor_imu(connected_device, 0xFE)  # 開啟 IMU 設定
                     await monitor_button(connected_device)
                     await monitor_imu(connected_device)
+                    await set_monitor_imu(connected_device, 0xFF)  # 關閉 IMU 設定
             except Exception as e:
                 print_to_terminal(f"Failed to connect to the device: {e}", Fore.RED)
 
@@ -481,23 +555,56 @@ class BLEMonitorApp:
         self.ax2.clear()
         self.canvas.draw()
         print_to_terminal("Plot cleared.", Fore.CYAN)
+        self.reset_checkbuttons()
 
     def disconnect_device(self):
-        global connected_device
+        global connected_device, stop_monitoring, disconnect_event
+        stop_monitoring = True
+        disconnect_event.set()
+        self.reset_checkbuttons()
         if connected_device:
             try:
-                self.loop.run_until_complete(connected_device.disconnect())
+                self.loop.run_until_complete(self._disconnect())
                 connected_device = None
                 print_to_terminal("Disconnected from device.", Fore.CYAN)
             except Exception as e:
                 print_to_terminal(f"Failed to disconnect from the device: {e}", Fore.RED)
 
+    async def _disconnect(self):
+        global connected_device
+        try:
+            if connected_device.is_connected:
+                await connected_device.stop_notify(BUTTON_CHAR_UUID)
+                await connected_device.stop_notify(MOTION_MEASUREMENT_CHAR_UUID)
+                await connected_device.disconnect()
+        except Exception as e:
+            print_to_terminal(f"Failed to stop notifications or disconnect: {e}", Fore.RED)
+
     def quit_app(self):
         global stop_monitoring
         stop_monitoring = True
-        if self.ble_thread:
+        disconnect_event.set()
+        self.disconnect_device()
+        if self.ble_thread and self.ble_thread.is_alive():
             self.ble_thread.join()
         self.root.quit()
+
+    def reset_checkbuttons(self):
+        self.update_checkbutton(self.device_info_checkbutton, False, "裝置資訊")
+        self.update_checkbutton(self.battery_checkbutton, False, "電池電量")
+        self.update_checkbutton(self.button_checkbutton, False, "按扭")
+        self.update_checkbutton(self.imu_checkbutton, False, "IMU")
+
+    def update_checkbutton(self, checkbutton, checked, text):
+        checkbutton.config(state=tk.NORMAL)
+        if checked:
+            checkbutton.config(fg="green")
+            checkbutton.select()
+        else:
+            checkbutton.config(fg="black")
+            checkbutton.deselect()
+        checkbutton.config(text=text)
+        checkbutton.config(state=tk.DISABLED)
 
 if __name__ == "__main__":
     root = tk.Tk()

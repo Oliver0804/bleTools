@@ -26,3 +26,9 @@ Run the script with the following command:
 ```
 python main.py
 ```
+
+Build windws exe file
+
+```
+pyinstaller --onefile --noconsole main.py
+```
