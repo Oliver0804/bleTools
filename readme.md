@@ -2,6 +2,8 @@
 
 This is a Python tool for scanning, connecting, and testing BLE devices. The tool can read device information, battery level, TX power, and current time, as well as control the LED color and mode. Additionally, it can monitor button press states.
 
+![](./demo.gif)
+
 ## Features
 
 - Scan and list BLE devices with names starting with "Lapita_"
