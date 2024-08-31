@@ -32,6 +32,9 @@ MOTION_MEASUREMENT_CHAR_UUID = "00001601-0000-1000-8000-00805f9b34fb"  # Motion 
 CTS_SERVICE_UUID = "00001805-0000-1000-8000-00805f9b34fb"  # Current Time Service UUID
 CTS_CHARACTERISTIC_UUID = "00002a2b-0000-1000-8000-00805f9b34fb"  # Current Time Characteristic UUID
 IMU_SETTING_CHAR_UUID = "0000ff10-0000-1000-8000-00805f9b34fb"  # IMU 設定特徵 UUID
+IMU_CONFIG_TX_UUID= "0000fff6-0000-1000-8000-00805f9b34fb"  # FAKE IMU CONFIG TX
+IMU_CONFIG_RX_UUID= "0000fff7-0000-1000-8000-00805f9b34fb"  # FAKE IMU CONFIG RX
+
 
 MAC_FILE_PATH = "MacID.txt"
 button_pushed_count = 0
@@ -133,6 +136,14 @@ async def write_current_time(client):
     except Exception as e:
         print_to_terminal(f"Failed to write current time: {e}", Fore.RED)
 
+async def write_fake_imu_config(client, ACC_FSR, GYRO_FSR, DATARATE): 
+    print_to_terminal("Writing fake IMU config...", Fore.BLACK)
+    try:
+        await client.write_gatt_char(IMU_CONFIG_TX_UUID, bytearray([0x45, ACC_FSR, GYRO_FSR, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, DATARATE, 0x00, 0x00, 0x00, 0x00, 0x00]))
+        print_to_terminal("Fake IMU config written successfully.", Fore.GREEN)
+    except Exception as e:
+        print_to_terminal(f"Failed to write fake IMU config: {e}", Fore.RED)
+
 async def read_current_time(client):
     print_to_terminal("Reading current time...", Fore.BLACK)
     try:
@@ -200,6 +211,23 @@ async def set_monitor_imu(client, value):
     except Exception as e:
         print_to_terminal(f"Failed to set IMU: {e}", Fore.RED)
 
+# async def set_monitor_imu(client, value):
+#     try:
+#         if client.is_connected:
+#             # Here, we assume 'value' is already prepared as a single byte that directly maps to the command
+#             # If 'value' is a simple enable/disable, you might send 0x01 for enable and 0x00 for disable
+#             # Or convert a more complex data structure into the appropriate byte format
+#             command = bytearray([value])
+
+#             # Write the command to the IMU control characteristic
+#             await client.write_gatt_char(imu_control_uuid, command)
+#             print_to_terminal(f"Set IMU monitoring state to {'enabled' if value == 0x01 else 'disabled'}.", Fore.GREEN)
+
+#     except Exception as e:
+#         print_to_terminal(f"Error setting IMU monitoring state: {e}", Fore.RED)
+
+
+
 def button_callback(sender: int, data: bytearray):
     global button_pushed_count
     if data[0] in [0x01, 0x10, 0x11]:
@@ -221,6 +249,8 @@ async def monitor_button(client):
         await client.stop_notify(BUTTON_CHAR_UUID)
     except Exception as e:
         print_to_terminal(f"Failed to monitor button: {e}", Fore.RED)
+
+
 
 def parse_imu_data(data):
     ax = int.from_bytes(data[0:2], byteorder='little', signed=True)
@@ -312,6 +342,30 @@ class BLEMonitorApp:
         # Right frame for TextBox and ListBox
         control_frame = tk.Frame(main_frame)
         control_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        # Adding IMU Configuration Inputs
+        imu_config_frame = tk.Frame(control_frame)
+        imu_config_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+
+        # Labels and Entry fields for IMU settings
+        tk.Label(imu_config_frame, text="ACC (FSR):").pack(side=tk.TOP, anchor='w')
+        self.acc_entry = tk.Entry(imu_config_frame)
+        self.acc_entry.pack(side=tk.TOP, fill=tk.X)
+        self.acc_entry.insert(0, "03")  # Default value
+
+        tk.Label(imu_config_frame, text="GYR (FSR):").pack(side=tk.TOP, anchor='w')
+        self.gyr_entry = tk.Entry(imu_config_frame)
+        self.gyr_entry.pack(side=tk.TOP, fill=tk.X)
+        self.gyr_entry.insert(0, "03")  # Default value
+
+        tk.Label(imu_config_frame, text="Sampling Freq:").pack(side=tk.TOP, anchor='w')
+        self.freq_entry = tk.Entry(imu_config_frame)
+        self.freq_entry.pack(side=tk.TOP, fill=tk.X)
+        self.freq_entry.insert(0, "08")  # Default value
+
+        # Button to apply IMU Configuration
+        # self.config_imu_button = ttk.Button(imu_config_frame, text="Configure IMU", command=self.apply_imu_config)
+        # self.config_imu_button.pack(side=tk.TOP, pady=10)
 
         self.figure = Figure(figsize=(8, 6), dpi=100)
         self.ax1 = self.figure.add_subplot(211)
@@ -422,6 +476,28 @@ class BLEMonitorApp:
         self.quit_button.pack(side=tk.LEFT)
 
         self.update_mac_list()
+        
+    def apply_imu_config(self):
+        # Fetch values from the GUI entries
+        acc_fsr = self.acc_entry.get()  # ACC FSR from GUI
+        gyr_fsr = self.gyr_entry.get()  # GYRO FSR from GUI
+        data_rate = self.freq_entry.get()  # Sampling Frequency from GUI
+
+        # Default values for other parameters
+        intr_thres = 0x00  # Assuming no threshold adjustment required
+        data_type = "0x00"  # 6x data
+        exec_cmd = "0x00"  # Disable
+        count_char = "0x00"  # No count
+        count_threshold = 0x0000  # No threshold set
+
+        # Check if there is a connected device and then run the configuration function
+        if connected_device:
+            self.ble_thread = threading.Thread(target=lambda: asyncio.run(
+                self.send_imu_config_to_device(acc_fsr, gyr_fsr, intr_thres, data_rate, data_type, exec_cmd, count_char, count_threshold)))
+            self.ble_thread.start()
+
+        # Optionally, you could print these values to the terminal to debug
+        print_to_terminal(f"Configuring IMU: ACC_FSR={acc_fsr}, GYRO_FSR={gyr_fsr}, DATA_RATE={data_rate}", Fore.CYAN)
 
     def update_plot(self):
         if not imu_queue.empty():
@@ -487,6 +563,10 @@ class BLEMonitorApp:
             print_to_terminal(f"Selected MAC address: {selected_mac}", Fore.CYAN)
 
     def connect_to_device(self, address):
+        acc_fsr = int(self.acc_entry.get(), 16)
+        gyr_fsr = int(self.gyr_entry.get(), 16)
+        datarate = int(self.freq_entry.get(), 16)
+
         async def connect():
             global connected_device, disconnect_event
             disconnect_event.clear()
@@ -508,12 +588,15 @@ class BLEMonitorApp:
                     await set_led_setting(connected_device, 0x00, 0x00, 0xFF, 0x02, 0x00)  # 藍色
                     await asyncio.sleep(1)
                     await set_led_mode(connected_device, 0x00)
+
+                    await write_fake_imu_config(connected_device, acc_fsr, gyr_fsr, datarate)
+
                     await set_monitor_imu(connected_device, 0xFE)  # 開啟 IMU 設定
                     await monitor_button(connected_device)
                     await monitor_imu(connected_device)
-                    await set_monitor_imu(connected_device, 0xFF)  # 關閉 IMU 設定
+                    await set_monitor_imu(connected_device, 0xFF)  # 關閉 IMU 
             except Exception as e:
-                print_to_terminal(f"Failed to connect to the device: {e}", Fore.RED)
+                print_to_terminal(f"Failed to connect to {address}: {e}", Fore.RED)
 
         self.ble_thread = threading.Thread(target=lambda: asyncio.run(connect()))
         self.ble_thread.start()
